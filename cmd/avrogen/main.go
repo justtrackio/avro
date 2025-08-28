@@ -282,7 +282,12 @@ func getDependencies(t any) (deps []string) {
 			deps = append(deps, getDependencies(it)...)
 		}
 	case map[string]any:
+		// nested types
 		deps = append(deps, getDependencies(val["type"])...)
+		// nested maps
+		deps = append(deps, getDependencies(val["values"])...)
+		// nested arrays
+		deps = append(deps, getDependencies(val["items"])...)
 	}
 
 	return
