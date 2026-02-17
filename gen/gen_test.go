@@ -72,7 +72,7 @@ func TestStruct_HandlesGoInitialisms(t *testing.T) {
 
 	_, lines := generate(t, schema, gc)
 
-	assert.Contains(t, lines, "type HTTPRecord struct {")
+	assert.Contains(t, lines, "type HttpRecord struct {")
 }
 
 func TestStruct_MultilineDoc(t *testing.T) {
@@ -139,7 +139,7 @@ func TestStruct_HandlesAdditionalInitialisms(t *testing.T) {
 
 	_, lines := generate(t, schema, gc)
 
-	assert.Contains(t, lines, "type CIDOverHTTPRecord struct {")
+	assert.Contains(t, lines, "type CIDOverHttpRecord struct {")
 }
 
 func TestStruct_HandlesStrictTypes(t *testing.T) {
@@ -228,7 +228,7 @@ func TestStruct_ConfigurableLogicalTypes(t *testing.T) {
 		"import (",
 		"\"github.com/google/uuid\"",
 		"type Test struct {",
-		"ID uuid.UUID `avro:\"id\"`",
+		"Id uuid.UUID `avro:\"id\"`",
 		"}",
 	} {
 		assert.Contains(t, lines, expected)

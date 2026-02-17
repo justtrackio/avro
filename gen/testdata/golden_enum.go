@@ -2,10 +2,9 @@
 package something
 
 import (
+	"github.com/justtrackio/avro/v2"
 	"math/big"
 	"time"
-
-	"github.com/justtrackio/avro/v2"
 )
 
 type Cards string
@@ -88,5 +87,5 @@ type Test struct {
 	NonNullableRecordUnion          any                    `avro:"nonNullableRecordUnion"`
 	NullableRecordUnionWith3Options any                    `avro:"nullableRecordUnionWith3Options"`
 	Ref                             Record2InNullableUnion `avro:"ref"`
-	UUID                            string                 `avro:"uuid"`
+	Uuid                            string                 `avro:"uuid"`
 }

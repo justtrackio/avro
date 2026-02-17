@@ -2,8 +2,6 @@ module github.com/justtrackio/avro/v2
 
 go 1.24.0
 
-toolchain go1.24.0
-
 require (
 	github.com/ettle/strcase v0.2.0
 	github.com/go-viper/mapstructure/v2 v2.4.0
