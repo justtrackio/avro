@@ -12,8 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/justtrackio/avro/v2/pkg/crc64"
 	jsoniter "github.com/json-iterator/go"
+	"github.com/justtrackio/avro/v2/pkg/crc64"
 )
 
 type nullDefaultType struct{}
@@ -411,6 +411,125 @@ func (p properties) marshalPropertiesToJSON(buf *bytes.Buffer) error {
 	return nil
 }
 
+func marshalDefaultValue(schema Schema, def any) ([]byte, error) {
+	switch schema.Type() {
+	case Ref:
+		return marshalDefaultValue(schema.(*RefSchema).Schema(), def)
+	case Union:
+		unionSchema := schema.(*UnionSchema)
+		return marshalDefaultValue(unionSchema.Types()[0], def)
+	case Record:
+		m, ok := def.(map[string]any)
+		if !ok {
+			return jsoniter.Marshal(def)
+		}
+		seen := make(map[string]struct{}, len(m))
+		buf := new(bytes.Buffer)
+		buf.WriteByte('{')
+		first := true
+		for _, field := range schema.(*RecordSchema).Fields() {
+			value, ok := m[field.Name()]
+			if !ok {
+				value = field.Default()
+			}
+			valueJSON, err := marshalDefaultValue(field.Type(), value)
+			if err != nil {
+				return nil, err
+			}
+			keyJSON, err := jsoniter.Marshal(field.Name())
+			if err != nil {
+				return nil, err
+			}
+			if !first {
+				buf.WriteByte(',')
+			}
+			first = false
+			buf.Write(keyJSON)
+			buf.WriteByte(':')
+			buf.Write(valueJSON)
+			seen[field.Name()] = struct{}{}
+		}
+		extraKeys := make([]string, 0)
+		for key := range m {
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			extraKeys = append(extraKeys, key)
+		}
+		sort.Strings(extraKeys)
+		for _, key := range extraKeys {
+			valueJSON, err := jsoniter.Marshal(m[key])
+			if err != nil {
+				return nil, err
+			}
+			keyJSON, err := jsoniter.Marshal(key)
+			if err != nil {
+				return nil, err
+			}
+			if !first {
+				buf.WriteByte(',')
+			}
+			first = false
+			buf.Write(keyJSON)
+			buf.WriteByte(':')
+			buf.Write(valueJSON)
+		}
+		buf.WriteByte('}')
+		return buf.Bytes(), nil
+	case Map:
+		m, ok := def.(map[string]any)
+		if !ok {
+			return jsoniter.Marshal(def)
+		}
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		buf := new(bytes.Buffer)
+		buf.WriteByte('{')
+		for i, key := range keys {
+			valueJSON, err := marshalDefaultValue(schema.(*MapSchema).Values(), m[key])
+			if err != nil {
+				return nil, err
+			}
+			keyJSON, err := jsoniter.Marshal(key)
+			if err != nil {
+				return nil, err
+			}
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			buf.Write(keyJSON)
+			buf.WriteByte(':')
+			buf.Write(valueJSON)
+		}
+		buf.WriteByte('}')
+		return buf.Bytes(), nil
+	case Array:
+		arr, ok := def.([]any)
+		if !ok {
+			return jsoniter.Marshal(def)
+		}
+		buf := new(bytes.Buffer)
+		buf.WriteByte('[')
+		for i, value := range arr {
+			valueJSON, err := marshalDefaultValue(schema.(*ArraySchema).Items(), value)
+			if err != nil {
+				return nil, err
+			}
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			buf.Write(valueJSON)
+		}
+		buf.WriteByte(']')
+		return buf.Bytes(), nil
+	default:
+		return jsoniter.Marshal(def)
+	}
+}
+
 type schemaConfig struct {
 	aliases []string
 	doc     string
@@ -699,15 +818,33 @@ func (s *RecordSchema) FingerprintUsing(typ FingerprintType) ([]byte, error) {
 // CacheFingerprint returns unique identity of the schema.
 func (s *RecordSchema) CacheFingerprint() [32]byte {
 	return s.cacheFingerprinter.CacheFingerprint(s, func() []byte {
-		var defs []any
+		buf := new(bytes.Buffer)
+		buf.WriteByte('[')
+		first := true
 		for _, field := range s.fields {
 			if !field.HasDefault() {
 				continue
 			}
-			defs = append(defs, field.Default())
+			defJSON, err := marshalDefaultValue(field.Type(), field.Default())
+			if err != nil {
+				var defs []any
+				for _, fallbackField := range s.fields {
+					if !fallbackField.HasDefault() {
+						continue
+					}
+					defs = append(defs, fallbackField.Default())
+				}
+				b, _ := jsoniter.Marshal(defs)
+				return b
+			}
+			if !first {
+				buf.WriteByte(',')
+			}
+			first = false
+			buf.Write(defJSON)
 		}
-		b, _ := jsoniter.Marshal(defs)
-		return b
+		buf.WriteByte(']')
+		return buf.Bytes()
 	})
 }
 
@@ -872,7 +1009,7 @@ func (f *Field) MarshalJSON() ([]byte, error) {
 	buf.WriteString(`,"type":`)
 	buf.Write(typeJSON)
 	if f.hasDef {
-		defaultValueJSON, err := jsoniter.Marshal(f.Default())
+		defaultValueJSON, err := marshalDefaultValue(f.typ, f.Default())
 		if err != nil {
 			return nil, err
 		}

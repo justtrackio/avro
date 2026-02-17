@@ -461,6 +461,23 @@ func TestRecordSchema_ValidatesDefault(t *testing.T) {
 	}
 }
 
+func TestRecordSchema_MarshalJSONOrdersRecordDefaults(t *testing.T) {
+	schema := `{"type":"record","name":"test","fields":[{"name":"rec","type":{"type":"record","name":"inner","fields":[{"name":"b","type":"int"},{"name":"a","type":"int"}]},"default":{"a":1,"b":2}}]}`
+
+	parsed, err := avro.ParseWithCache(schema, "", &avro.SchemaCache{})
+	require.NoError(t, err)
+
+	b, err := parsed.(*avro.RecordSchema).MarshalJSON()
+	require.NoError(t, err)
+
+	jsonSchema := string(b)
+	defaultIndex := strings.Index(jsonSchema, `"default":`)
+	require.GreaterOrEqual(t, defaultIndex, 0)
+
+	defaultObjectIndex := strings.Index(jsonSchema[defaultIndex:], `{"b":2,"a":1}`)
+	assert.GreaterOrEqual(t, defaultObjectIndex, 0)
+}
+
 func TestRecordSchema_ValidatesOrder(t *testing.T) {
 	tests := []struct {
 		name    string
