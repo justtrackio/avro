@@ -13,6 +13,7 @@ import (
 
 	"github.com/justtrackio/avro/v2"
 	"github.com/justtrackio/avro/v2/ocf"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,7 +90,8 @@ func TestNewDecoder_InvalidSchema(t *testing.T) {
 }
 
 func TestNewDecoder_InvalidCodec(t *testing.T) {
-	data := []byte{'O', 'b', 'j', 0x1, 0x3, 0x4c, 0x16, 'a', 'v', 'r', 'o', '.', 's', 'c', 'h', 'e', 'm', 'a', 0xc, 0x22, 'l', 'o', 'n', 'g',
+	data := []byte{
+		'O', 'b', 'j', 0x1, 0x3, 0x4c, 0x16, 'a', 'v', 'r', 'o', '.', 's', 'c', 'h', 'e', 'm', 'a', 0xc, 0x22, 'l', 'o', 'n', 'g',
 		0x22, 0x14, 'a', 'v', 'r', 'o', 0x2e, 'c', 'o', 'd', 'e', 'c', 0xe, 'd', 'e', 'a', 'l', 'a', 't', 'e', 0x0,
 		0x72, 0xce, 0x78, 0x7, 0x35, 0x81, 0xb0, 0x80, 0x77, 0x59, 0xa9, 0x83, 0xaf, 0x90, 0x3e, 0xaf,
 	}
@@ -409,8 +411,55 @@ func TestDecoder_WithZStandardHandlesInvalidData(t *testing.T) {
 	assert.Error(t, dec.Error())
 }
 
+func TestDecoder_WithZStandardOptions(t *testing.T) {
+	unionStr := "union value"
+	want := FullRecord{
+		Strings: []string{"string1", "string2", "string3", "string4", "string5"},
+		Longs:   []int64{1, 2, 3, 4, 5},
+		Enum:    "C",
+		Map: map[string]int{
+			"ke\xa9\xb1": 1,
+			"\x00\x00y2": 2,
+			"key3":       3,
+			"key4":       4,
+			"key5":       5,
+		},
+		Nullable: &unionStr,
+		Fixed:    [16]byte{0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04},
+		Record: &TestRecord{
+			Long:   1925639126735,
+			String: "I am a test record",
+			Int:    666,
+			Float:  7171.17,
+			Double: 916734926348163.01973408746523,
+			Bool:   true,
+		},
+	}
+
+	f, err := os.Open("testdata/zstd-invalid-data.avro")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+
+	dec, err := ocf.NewDecoder(f, ocf.WithZStandardDecoderOptions(zstd.IgnoreChecksum(true)))
+	require.NoError(t, err)
+
+	dec.HasNext()
+
+	var got FullRecord
+	err = dec.Decode(&got)
+
+	require.NoError(t, err, "should not cause an error because checksum is ignored")
+	require.NoError(t, dec.Error(), "should not cause an error because checksum is ignored")
+	assert.Equal(t, want, got, "should read corrupted data as valid because checksum is ignored")
+
+	dec.HasNext()
+
+	assert.ErrorContains(t, dec.Error(), "decoder: invalid block", "trailing byte in file should cause error before hitting zstd decoder")
+}
+
 func TestDecoder_DecodeAvroError(t *testing.T) {
-	data := []byte{'O', 'b', 'j', 0x01, 0x01, 0x26, 0x16, 'a', 'v', 'r', 'o', '.', 's', 'c', 'h', 'e', 'm', 'a',
+	data := []byte{
+		'O', 'b', 'j', 0x01, 0x01, 0x26, 0x16, 'a', 'v', 'r', 'o', '.', 's', 'c', 'h', 'e', 'm', 'a',
 		0x0c, '"', 'l', 'o', 'n', 'g', '"', 0x00, 0xfb, 0x2b, 0x0f, 0x1a, 0xdd, 0xfd, 0x90, 0x7d, 0x87, 0x12,
 		0x15, 0x29, 0xd7, 0x1d, 0x1c, 0xdd, 0x02, 0x16, 0xe2, 0xa2, 0xf3, 0xad, 0xad, 0xad, 0xe2, 0xa2, 0xf3,
 		0xad, 0xad, 0xfb, 0x2b, 0x0f, 0x1a, 0xdd, 0xfd, 0x90, 0x7d, 0x87, 0x12, 0x15, 0x29, 0xd7, 0x1d, 0x1c, 0xdd,
@@ -426,7 +475,8 @@ func TestDecoder_DecodeAvroError(t *testing.T) {
 }
 
 func TestDecoder_DecodeMustCallHasNext(t *testing.T) {
-	data := []byte{'O', 'b', 'j', 0x01, 0x01, 0x26, 0x16, 'a', 'v', 'r', 'o', '.', 's', 'c', 'h', 'e', 'm', 'a',
+	data := []byte{
+		'O', 'b', 'j', 0x01, 0x01, 0x26, 0x16, 'a', 'v', 'r', 'o', '.', 's', 'c', 'h', 'e', 'm', 'a',
 		0x0c, '"', 'l', 'o', 'n', 'g', '"', 0x00, 0xfb, 0x2b, 0x0f, 0x1a, 0xdd, 0xfd, 0x90, 0x7d, 0x87, 0x12,
 		0x15, 0x29, 0xd7, 0x1d, 0x1c, 0xdd, 0x02, 0x02, 0x02, 0xfb, 0x2b, 0x0f, 0x1a, 0xdd, 0xfd, 0x90, 0x7d,
 		0x87, 0x12, 0x15, 0x29, 0xd7, 0x1d, 0x1c, 0xdd,
@@ -441,7 +491,8 @@ func TestDecoder_DecodeMustCallHasNext(t *testing.T) {
 }
 
 func TestDecoder_InvalidBlock(t *testing.T) {
-	data := []byte{'O', 'b', 'j', 0x01, 0x01, 0x26, 0x16, 'a', 'v', 'r', 'o', '.', 's', 'c', 'h', 'e', 'm', 'a',
+	data := []byte{
+		'O', 'b', 'j', 0x01, 0x01, 0x26, 0x16, 'a', 'v', 'r', 'o', '.', 's', 'c', 'h', 'e', 'm', 'a',
 		0x0c, '"', 'l', 'o', 'n', 'g', '"', 0x00, 0xfa, 0x2b, 0x0f, 0x1a, 0xdd, 0xfd, 0x90, 0x7d, 0x87, 0x12,
 		0x15, 0x29, 0xd7, 0x1d, 0x1c, 0xdd, 0x02, 0x02, 0x02, 0xfb, 0x2b, 0x0f, 0x1a, 0xdd, 0xfd, 0x90, 0x7d,
 		0x87, 0x12, 0x15, 0x29, 0xd7, 0x1d, 0x1c, 0xdd,
@@ -640,7 +691,6 @@ func TestEncoder_WithEncodingConfig(t *testing.T) {
 			assert.Equal(t, tt.wantPayload, skipOcfHeader(buf.Bytes()))
 		})
 	}
-
 }
 
 func TestEncoder_ExistingOCF(t *testing.T) {
@@ -878,6 +928,43 @@ func TestEncoder_EncodeCompressesZStandard(t *testing.T) {
 	assert.Equal(t, 951, buf.Len())
 }
 
+func TestEncoder_EncodeCompressesZStandardWithLevel(t *testing.T) {
+	unionStr := "union value"
+	record := FullRecord{
+		Strings: []string{"string1", "string2", "string3", "string4", "string5"},
+		Longs:   []int64{1, 2, 3, 4, 5},
+		Enum:    "C",
+		Map: map[string]int{
+			"key1": 1,
+			"key2": 2,
+			"key3": 3,
+			"key4": 4,
+			"key5": 5,
+		},
+		Nullable: &unionStr,
+		Fixed:    [16]byte{0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04},
+		Record: &TestRecord{
+			Long:   1925639126735,
+			String: "I am a test record",
+			Int:    666,
+			Float:  7171.17,
+			Double: 916734926348163.01973408746523,
+			Bool:   true,
+		},
+	}
+
+	buf := &bytes.Buffer{}
+	enc, _ := ocf.NewEncoder(schema, buf, ocf.WithCodec(ocf.ZStandard), ocf.WithZStandardEncoderOptions(zstd.WithEncoderLevel(zstd.SpeedBestCompression)))
+
+	err := enc.Encode(record)
+	assert.NoError(t, err)
+
+	err = enc.Close()
+
+	require.NoError(t, err)
+	assert.Equal(t, 942, buf.Len())
+}
+
 func TestEncoder_EncodeError(t *testing.T) {
 	buf := &bytes.Buffer{}
 	enc, err := ocf.NewEncoder(`"long"`, buf)
@@ -898,6 +985,29 @@ func TestEncoder_EncodeWritesBlocks(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, 77, buf.Len())
+}
+
+func TestEncoder_EncodeWritesBlocksSize(t *testing.T) {
+	buf := &bytes.Buffer{}
+	enc, _ := ocf.NewEncoder(`"long"`, buf, ocf.WithBlockSize(2))
+	t.Cleanup(func() { _ = enc.Close() })
+
+	// Initial header should be exactly 58 bytes
+	assert.Equal(t, 58, buf.Len())
+
+	// Encode a single int64 value (1), which zig-zag encodes to 1 byte
+	err := enc.Encode(int64(1))
+	require.NoError(t, err)
+
+	// Block size threshold not reached yet; no data block should be written
+	assert.Equal(t, 58, buf.Len())
+
+	// Encode another int64 value (1), bringing buffer size to 2 bytes
+	err = enc.Encode(int64(1))
+	require.NoError(t, err)
+
+	// Block size threshold reached; data block should now be flushed
+	assert.Equal(t, 78, buf.Len())
 }
 
 func TestEncoder_EncodeHandlesWriteBlockError(t *testing.T) {
@@ -935,6 +1045,25 @@ func TestEncodeDecodeMetadata(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []byte("foo"), dec.Metadata()["test"])
+}
+
+func TestEncodeDecodeMetadataKeyVal(t *testing.T) {
+	buf := &bytes.Buffer{}
+	enc, _ := ocf.NewEncoder(`"long"`, buf,
+		ocf.WithMetadataKeyVal("key1", []byte("val1")),
+		ocf.WithMetadataKeyVal("key2", []byte("val2")),
+	)
+
+	err := enc.Encode(int64(1))
+	require.NoError(t, err)
+
+	_ = enc.Close()
+
+	dec, err := ocf.NewDecoder(buf)
+
+	require.NoError(t, err)
+	assert.Equal(t, []byte("val1"), dec.Metadata()["key1"])
+	assert.Equal(t, []byte("val2"), dec.Metadata()["key2"])
 }
 
 func TestEncode_WithSyncBlock(t *testing.T) {
@@ -1182,4 +1311,341 @@ type errorHeaderWriter struct{}
 
 func (*errorHeaderWriter) Write(p []byte) (int, error) {
 	return 0, errors.New("test")
+}
+
+func TestSharedZstdEncoder(t *testing.T) {
+	schema := `{"type": "string"}`
+
+	// Create a shared zstd encoder
+	sharedEncoder, err := zstd.NewWriter(nil)
+	require.NoError(t, err)
+	defer sharedEncoder.Close()
+
+	// Use the shared encoder with multiple OCF encoders
+	var buf1, buf2 bytes.Buffer
+
+	enc1, err := ocf.NewEncoder(schema, &buf1, ocf.WithCodec(ocf.ZStandard), ocf.WithZStandardEncoder(sharedEncoder))
+	require.NoError(t, err)
+	require.NoError(t, enc1.Encode("hello from encoder 1"))
+	require.NoError(t, enc1.Close())
+
+	enc2, err := ocf.NewEncoder(schema, &buf2, ocf.WithCodec(ocf.ZStandard), ocf.WithZStandardEncoder(sharedEncoder))
+	require.NoError(t, err)
+	require.NoError(t, enc2.Encode("hello from encoder 2"))
+	require.NoError(t, enc2.Close())
+
+	// Verify both files can be read
+	dec1, err := ocf.NewDecoder(&buf1)
+	require.NoError(t, err)
+	require.True(t, dec1.HasNext())
+	var result1 string
+	require.NoError(t, dec1.Decode(&result1))
+	assert.Equal(t, "hello from encoder 1", result1)
+
+	dec2, err := ocf.NewDecoder(&buf2)
+	require.NoError(t, err)
+	require.True(t, dec2.HasNext())
+	var result2 string
+	require.NoError(t, dec2.Decode(&result2))
+	assert.Equal(t, "hello from encoder 2", result2)
+}
+
+func TestSharedZstdDecoder(t *testing.T) {
+	schema := `{"type": "string"}`
+
+	// Create two OCF files
+	var buf1, buf2 bytes.Buffer
+
+	enc1, err := ocf.NewEncoder(schema, &buf1, ocf.WithCodec(ocf.ZStandard))
+	require.NoError(t, err)
+	require.NoError(t, enc1.Encode("data in file 1"))
+	require.NoError(t, enc1.Close())
+
+	enc2, err := ocf.NewEncoder(schema, &buf2, ocf.WithCodec(ocf.ZStandard))
+	require.NoError(t, err)
+	require.NoError(t, enc2.Encode("data in file 2"))
+	require.NoError(t, enc2.Close())
+
+	// Create a shared zstd decoder
+	sharedDecoder, err := zstd.NewReader(nil)
+	require.NoError(t, err)
+	defer sharedDecoder.Close()
+
+	// Use the shared decoder with multiple OCF decoders
+	dec1, err := ocf.NewDecoder(&buf1, ocf.WithZStandardDecoder(sharedDecoder))
+	require.NoError(t, err)
+	require.True(t, dec1.HasNext())
+	var result1 string
+	require.NoError(t, dec1.Decode(&result1))
+	assert.Equal(t, "data in file 1", result1)
+
+	dec2, err := ocf.NewDecoder(&buf2, ocf.WithZStandardDecoder(sharedDecoder))
+	require.NoError(t, err)
+	require.True(t, dec2.HasNext())
+	var result2 string
+	require.NoError(t, dec2.Decode(&result2))
+	assert.Equal(t, "data in file 2", result2)
+}
+
+// TestEncoder_Reset tests that Reset allows reusing encoder for multiple files.
+func TestEncoder_Reset(t *testing.T) {
+	record1 := FullRecord{
+		Strings: []string{"first", "record"},
+		Longs:   []int64{},
+		Enum:    "A",
+		Map:     map[string]int{},
+		Record:  &TestRecord{Long: 1},
+	}
+	record2 := FullRecord{
+		Strings: []string{"second", "record"},
+		Longs:   []int64{},
+		Enum:    "B",
+		Map:     map[string]int{},
+		Record:  &TestRecord{Long: 2},
+	}
+
+	// Create first file
+	buf1 := &bytes.Buffer{}
+	enc, err := ocf.NewEncoder(schema, buf1)
+	require.NoError(t, err)
+
+	err = enc.Encode(record1)
+	require.NoError(t, err)
+
+	err = enc.Close()
+	require.NoError(t, err)
+
+	// Reset to write to second file
+	buf2 := &bytes.Buffer{}
+	err = enc.Reset(buf2)
+	require.NoError(t, err)
+
+	err = enc.Encode(record2)
+	require.NoError(t, err)
+
+	err = enc.Close()
+	require.NoError(t, err)
+
+	// Verify first file
+	dec1, err := ocf.NewDecoder(buf1)
+	require.NoError(t, err)
+
+	require.True(t, dec1.HasNext())
+	var got1 FullRecord
+	err = dec1.Decode(&got1)
+	require.NoError(t, err)
+	assert.Equal(t, record1, got1)
+	require.False(t, dec1.HasNext())
+
+	// Verify second file
+	dec2, err := ocf.NewDecoder(buf2)
+	require.NoError(t, err)
+
+	require.True(t, dec2.HasNext())
+	var got2 FullRecord
+	err = dec2.Decode(&got2)
+	require.NoError(t, err)
+	assert.Equal(t, record2, got2)
+	require.False(t, dec2.HasNext())
+}
+
+// TestEncoder_ResetWithPendingData tests Reset flushes pending data.
+func TestEncoder_ResetWithPendingData(t *testing.T) {
+	buf1 := &bytes.Buffer{}
+	enc, err := ocf.NewEncoder(`"long"`, buf1, ocf.WithBlockLength(10))
+	require.NoError(t, err)
+
+	// Write data but don't close (pending data)
+	err = enc.Encode(int64(42))
+	require.NoError(t, err)
+
+	// Reset should flush the pending data
+	buf2 := &bytes.Buffer{}
+	err = enc.Reset(buf2)
+	require.NoError(t, err)
+
+	// Verify first file has the data
+	dec1, err := ocf.NewDecoder(buf1)
+	require.NoError(t, err)
+
+	require.True(t, dec1.HasNext())
+	var got int64
+	err = dec1.Decode(&got)
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), got)
+}
+
+// TestEncoder_ResetGeneratesNewSyncMarker tests that each reset creates a new sync marker.
+func TestEncoder_ResetGeneratesNewSyncMarker(t *testing.T) {
+	buf1 := &bytes.Buffer{}
+	enc, err := ocf.NewEncoder(`"long"`, buf1)
+	require.NoError(t, err)
+
+	err = enc.Encode(int64(1))
+	require.NoError(t, err)
+	err = enc.Close()
+	require.NoError(t, err)
+
+	// Get sync marker from first file
+	dec1, err := ocf.NewDecoder(bytes.NewReader(buf1.Bytes()))
+	require.NoError(t, err)
+
+	reader1 := avro.NewReader(bytes.NewReader(buf1.Bytes()), 1024)
+	var h1 ocf.Header
+	reader1.ReadVal(ocf.HeaderSchema, &h1)
+	require.NoError(t, reader1.Error)
+	sync1 := h1.Sync
+
+	// Reset to second buffer
+	buf2 := &bytes.Buffer{}
+	err = enc.Reset(buf2)
+	require.NoError(t, err)
+
+	err = enc.Encode(int64(2))
+	require.NoError(t, err)
+	err = enc.Close()
+	require.NoError(t, err)
+
+	// Get sync marker from second file
+	reader2 := avro.NewReader(bytes.NewReader(buf2.Bytes()), 1024)
+	var h2 ocf.Header
+	reader2.ReadVal(ocf.HeaderSchema, &h2)
+	require.NoError(t, reader2.Error)
+	sync2 := h2.Sync
+
+	// Sync markers should be different
+	assert.NotEqual(t, sync1, sync2, "each file should have a unique sync marker")
+
+	// But both files should be readable
+	_ = dec1
+	dec2, err := ocf.NewDecoder(buf2)
+	require.NoError(t, err)
+	require.True(t, dec2.HasNext())
+}
+
+// TestEncoder_ResetMultipleTimes tests multiple sequential resets.
+func TestEncoder_ResetMultipleTimes(t *testing.T) {
+	buffers := make([]*bytes.Buffer, 5)
+	for i := range buffers {
+		buffers[i] = &bytes.Buffer{}
+	}
+
+	enc, err := ocf.NewEncoder(`"long"`, buffers[0])
+	require.NoError(t, err)
+
+	for i := 0; i < 5; i++ {
+		if i > 0 {
+			err = enc.Reset(buffers[i])
+			require.NoError(t, err)
+		}
+
+		err = enc.Encode(int64(i * 10))
+		require.NoError(t, err)
+
+		err = enc.Close()
+		require.NoError(t, err)
+	}
+
+	// Verify all files
+	for i := 0; i < 5; i++ {
+		dec, err := ocf.NewDecoder(buffers[i])
+		require.NoError(t, err, "file %d", i)
+
+		require.True(t, dec.HasNext(), "file %d", i)
+		var got int64
+		err = dec.Decode(&got)
+		require.NoError(t, err, "file %d", i)
+		assert.Equal(t, int64(i*10), got, "file %d", i)
+	}
+}
+
+// TestEncoder_AppendToExistingFile tests appending records to an existing OCF file.
+func TestEncoder_AppendToExistingFile(t *testing.T) {
+	type SimpleRecord struct {
+		Name string `avro:"name"`
+		ID   int64  `avro:"id"`
+	}
+	simpleSchema := `{"type":"record","name":"SimpleRecord","fields":[{"name":"name","type":"string"},{"name":"id","type":"long"}]}`
+
+	record1 := SimpleRecord{Name: "first", ID: 1}
+	record2 := SimpleRecord{Name: "second", ID: 2}
+
+	tmpFile, err := os.CreateTemp("", "append-test-*.avro")
+	require.NoError(t, err)
+	tmpName := tmpFile.Name()
+	t.Cleanup(func() { _ = os.Remove(tmpName) })
+
+	// Write first record
+	enc, err := ocf.NewEncoder(simpleSchema, tmpFile)
+	require.NoError(t, err)
+	err = enc.Encode(record1)
+	require.NoError(t, err)
+	err = enc.Close()
+	require.NoError(t, err)
+	err = tmpFile.Close()
+	require.NoError(t, err)
+
+	// Reopen file and append second record
+	file, err := os.OpenFile(tmpName, os.O_RDWR, 0o644)
+	require.NoError(t, err)
+
+	enc2, err := ocf.NewEncoder(simpleSchema, file)
+	require.NoError(t, err)
+	err = enc2.Encode(record2)
+	require.NoError(t, err)
+	err = enc2.Close()
+	require.NoError(t, err)
+	err = file.Close()
+	require.NoError(t, err)
+
+	// Read back and verify both records
+	file, err = os.Open(tmpName)
+	require.NoError(t, err)
+	defer file.Close()
+
+	dec, err := ocf.NewDecoder(file)
+	require.NoError(t, err)
+
+	var records []SimpleRecord
+	for dec.HasNext() {
+		var r SimpleRecord
+		err = dec.Decode(&r)
+		require.NoError(t, err)
+		records = append(records, r)
+	}
+	require.NoError(t, dec.Error())
+
+	require.Len(t, records, 2)
+	assert.Equal(t, record1, records[0])
+	assert.Equal(t, record2, records[1])
+}
+
+// TestEncoder_ResetPreservesCodec tests that codec is preserved across reset.
+func TestEncoder_ResetPreservesCodec(t *testing.T) {
+	buf1 := &bytes.Buffer{}
+	enc, err := ocf.NewEncoder(`"long"`, buf1, ocf.WithCodec(ocf.Deflate))
+	require.NoError(t, err)
+
+	err = enc.Encode(int64(1))
+	require.NoError(t, err)
+	err = enc.Close()
+	require.NoError(t, err)
+
+	buf2 := &bytes.Buffer{}
+	err = enc.Reset(buf2)
+	require.NoError(t, err)
+
+	err = enc.Encode(int64(2))
+	require.NoError(t, err)
+	err = enc.Close()
+	require.NoError(t, err)
+
+	// Both files should use deflate codec
+	dec1, err := ocf.NewDecoder(buf1)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("deflate"), dec1.Metadata()["avro.codec"])
+
+	dec2, err := ocf.NewDecoder(buf2)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("deflate"), dec2.Metadata()["avro.codec"])
 }

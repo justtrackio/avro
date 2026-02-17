@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"container/heap"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,25 +11,41 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/justtrackio/avro/v2"
 	"github.com/justtrackio/avro/v2/gen"
+	"github.com/justtrackio/avro/v2/registry"
 	"golang.org/x/tools/imports"
 )
 
 type config struct {
 	TemplateFileName string
 
-	Pkg         string
-	PkgDoc      string
-	Out         string
-	Tags        string
-	FullName    bool
-	Encoders    bool
-	FullSchema  bool
-	StrictTypes bool
-	Initialisms string
+	Pkg            string
+	PkgDoc         string
+	Out            string
+	Tags           string
+	FullName       bool
+	Encoders       bool
+	FullSchema     bool
+	StrictTypes    bool
+	Initialisms    string
+	SchemaRegistry string
+	LogicalTypes   logicalTypes
+	EnumsGen       bool
+}
+
+type logicalTypes []string
+
+func (l *logicalTypes) String() string {
+	return strings.Join(*l, ",")
+}
+
+func (l *logicalTypes) Set(value string) error {
+	*l = append(*l, value)
+	return nil
 }
 
 func main() {
@@ -49,6 +66,12 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 	flgs.BoolVar(&cfg.StrictTypes, "strict-types", false, "Use strict type sizes (e.g. int32) during generation.")
 	flgs.StringVar(&cfg.Initialisms, "initialisms", "", "Custom initialisms <VAL>[,...] for struct and field names.")
 	flgs.StringVar(&cfg.TemplateFileName, "template-filename", "", "Override output template with one loaded from file.")
+	flgs.StringVar(&cfg.SchemaRegistry, "schemaregistry", "", "The URL to schema registry, e.g.: http://localhost:8081.")
+	flgs.BoolVar(&cfg.EnumsGen, "enums", false, "Generate Go enums for Avro enums.")
+	var lt logicalTypes
+	flgs.Var(&lt, "logicaltype",
+		"A logical type mapping of the form logicalType,goType[,import]. Can be specified multiple times.")
+
 	flgs.Usage = func() {
 		_, _ = fmt.Fprintln(stderr, "Usage: avrogen [options] schemas")
 		_, _ = fmt.Fprintln(stderr, "Options:")
@@ -89,7 +112,18 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		gen.WithTemplate(string(template)),
 		gen.WithStrictTypes(cfg.StrictTypes),
 		gen.WithFullSchema(cfg.FullSchema),
+		gen.WithEnums(cfg.EnumsGen),
 	}
+
+	for _, entry := range lt {
+		logicalType, err := parseLogicalType(entry)
+		if err != nil {
+			_, _ = fmt.Fprintln(stderr, "Error: "+err.Error())
+			return 1
+		}
+		opts = append(opts, gen.WithLogicalType(logicalType))
+	}
+
 	g := gen.NewGenerator(cfg.Pkg, tags, opts...)
 
 	files, err := sortFiles(flgs.Args())
@@ -98,12 +132,24 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	for _, file := range files {
-		schema, err := avro.ParseFiles(filepath.Clean(file))
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
-			return 2
+	for _, entry := range files {
+		var schema avro.Schema
+
+		switch cfg.SchemaRegistry {
+		case "":
+			schema, err = avro.ParseFiles(filepath.Clean(entry))
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+				return 2
+			}
+		default:
+			schema, err = schemaFromRegistry(cfg.SchemaRegistry, entry)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+				return 2
+			}
 		}
+
 		g.Parse(schema)
 	}
 
@@ -293,6 +339,42 @@ func getDependencies(t any) (deps []string) {
 	return
 }
 
+func parseLogicalType(raw string) (gen.LogicalType, error) {
+	out := gen.LogicalType{}
+	parts := strings.Split(raw, ",")
+
+	if len(parts) < 2 || len(parts) > 3 {
+		return out, errors.New("logical type must be of format logicalType,goType[,import]")
+	}
+	out.Name = parts[0]
+	out.Typ = parts[1]
+	if out.Name == "" {
+		return out, errors.New("logical type name is required")
+	}
+	if out.Typ == "" {
+		return out, errors.New("logical type underlying type is required")
+	}
+	if len(parts) == 3 {
+		importPath := parts[2]
+		if importPath == "" {
+			return out, errors.New(
+				"logicaltype import path cannot be empty if used " +
+					"(if unused because you are mapping to a core Go type, omit the trailing comma)")
+		}
+		importPath = strings.Trim(importPath, `"`)
+
+		// If it contains a dot in the first segment, it’s not stdlib
+		first := strings.SplitN(importPath, "/", 2)[0]
+		if strings.Contains(first, ".") {
+			out.ThirdPartyImport = importPath
+		} else {
+			out.Import = importPath
+		}
+	}
+
+	return out, nil
+}
+
 func writeOut(filename string, stdout io.Writer, bytes []byte) error {
 	writer := stdout
 	if filename != "" {
@@ -329,7 +411,7 @@ func parseTags(raw string) (map[string]gen.TagStyle, error) {
 	}
 
 	result := map[string]gen.TagStyle{}
-	for _, tag := range strings.Split(raw, ",") {
+	for tag := range strings.SplitSeq(raw, ",") {
 		parts := strings.Split(tag, ":")
 		switch {
 		case len(parts) != 2:
@@ -364,7 +446,7 @@ func parseInitialisms(raw string) ([]string, error) {
 	}
 
 	result := []string{}
-	for _, initialism := range strings.Split(raw, ",") {
+	for initialism := range strings.SplitSeq(raw, ",") {
 		if initialism != strings.ToUpper(initialism) {
 			return nil, fmt.Errorf("initialism %q must be fully in upper case", initialism)
 		}
@@ -379,4 +461,45 @@ func loadTemplate(templateFileName string) ([]byte, error) {
 		return nil, nil
 	}
 	return os.ReadFile(filepath.Clean(templateFileName))
+}
+
+func splitParameterEntry(entry string) (string, string, error) {
+	parts := strings.Split(entry, ":")
+	if len(parts) != 2 {
+		return "", "", errors.New("entry must be of format subject:version")
+	}
+
+	return parts[0], parts[1], nil
+}
+
+func schemaFromRegistry(schemaRegistry, entry string) (avro.Schema, error) {
+	client, err := registry.NewClient(schemaRegistry)
+	if err != nil {
+		return nil, err
+	}
+
+	subject, version, err := splitParameterEntry(entry)
+	if err != nil {
+		return nil, err
+	}
+
+	if version == "latest" {
+		schema, err := client.GetLatestSchema(context.Background(), subject)
+		if err != nil {
+			return nil, err
+		}
+
+		return schema, nil
+	}
+
+	v, err := strconv.Atoi(version)
+	if err != nil {
+		return nil, err
+	}
+	schema, err := client.GetSchemaByVersion(context.Background(), subject, v)
+	if err != nil {
+		return nil, err
+	}
+
+	return schema, nil
 }

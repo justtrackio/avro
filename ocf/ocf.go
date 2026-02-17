@@ -5,6 +5,7 @@ package ocf
 
 import (
 	"bytes"
+	"compress/flate"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/justtrackio/avro/v2"
 	"github.com/justtrackio/avro/v2/internal/bytesx"
+	"github.com/klauspost/compress/zstd"
 )
 
 const (
@@ -54,6 +56,7 @@ type Header struct {
 type decoderConfig struct {
 	DecoderConfig avro.API
 	SchemaCache   *avro.SchemaCache
+	CodecOptions  codecOptions
 }
 
 // DecoderFunc represents a configuration function for Decoder.
@@ -71,6 +74,22 @@ func WithDecoderConfig(wCfg avro.API) DecoderFunc {
 func WithDecoderSchemaCache(cache *avro.SchemaCache) DecoderFunc {
 	return func(cfg *decoderConfig) {
 		cfg.SchemaCache = cache
+	}
+}
+
+// WithZStandardDecoderOptions sets the options for the ZStandard decoder.
+func WithZStandardDecoderOptions(opts ...zstd.DOption) DecoderFunc {
+	return func(cfg *decoderConfig) {
+		cfg.CodecOptions.ZStandardOptions.DOptions = append(cfg.CodecOptions.ZStandardOptions.DOptions, opts...)
+	}
+}
+
+// WithZStandardDecoder sets a pre-created ZStandard decoder to be reused.
+// This allows sharing a single decoder across multiple OCF decoders for efficiency.
+// The caller is responsible for closing the decoder after all OCF decoders are done.
+func WithZStandardDecoder(dec *zstd.Decoder) DecoderFunc {
+	return func(cfg *decoderConfig) {
+		cfg.CodecOptions.ZStandardOptions.Decoder = dec
 	}
 }
 
@@ -93,6 +112,9 @@ func NewDecoder(r io.Reader, opts ...DecoderFunc) (*Decoder, error) {
 	cfg := decoderConfig{
 		DecoderConfig: avro.DefaultConfig,
 		SchemaCache:   avro.DefaultSchemaCache,
+		CodecOptions: codecOptions{
+			DeflateCompressionLevel: flate.DefaultCompression,
+		},
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -100,7 +122,7 @@ func NewDecoder(r io.Reader, opts ...DecoderFunc) (*Decoder, error) {
 
 	reader := avro.NewReader(r, 1024)
 
-	h, err := readHeader(reader, cfg.SchemaCache)
+	h, err := readHeader(reader, cfg.SchemaCache, cfg.CodecOptions)
 	if err != nil {
 		return nil, fmt.Errorf("decoder: %w", err)
 	}
@@ -163,6 +185,14 @@ func (d *Decoder) Error() error {
 	return d.reader.Error
 }
 
+// Close releases codec resources.
+func (d *Decoder) Close() error {
+	if c, ok := d.codec.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
+
 func (d *Decoder) readBlock() int64 {
 	_ = d.reader.Peek()
 	if errors.Is(d.reader.Error, io.EOF) {
@@ -174,7 +204,8 @@ func (d *Decoder) readBlock() int64 {
 	size := d.reader.ReadLong()
 
 	// Read the blocks data
-	if count > 0 {
+	switch {
+	case count > 0:
 		data := make([]byte, size)
 		d.reader.Read(data)
 
@@ -184,6 +215,11 @@ func (d *Decoder) readBlock() int64 {
 		}
 
 		d.resetReader.Reset(data)
+
+	case size > 0:
+		// Skip the block data when count is 0
+		data := make([]byte, size)
+		d.reader.Read(data)
 	}
 
 	// Read the sync.
@@ -197,14 +233,15 @@ func (d *Decoder) readBlock() int64 {
 }
 
 type encoderConfig struct {
-	BlockLength      int
-	CodecName        CodecName
-	CodecCompression int
-	Metadata         map[string][]byte
-	Sync             [16]byte
-	EncodingConfig   avro.API
-	SchemaCache      *avro.SchemaCache
-	SchemaMarshaler  func(avro.Schema) ([]byte, error)
+	BlockLength     int
+	BlockSize       int
+	CodecName       CodecName
+	CodecOptions    codecOptions
+	Metadata        map[string][]byte
+	Sync            [16]byte
+	EncodingConfig  avro.API
+	SchemaCache     *avro.SchemaCache
+	SchemaMarshaler func(avro.Schema) ([]byte, error)
 }
 
 // EncoderFunc represents a configuration function for Encoder.
@@ -214,6 +251,14 @@ type EncoderFunc func(cfg *encoderConfig)
 func WithBlockLength(length int) EncoderFunc {
 	return func(cfg *encoderConfig) {
 		cfg.BlockLength = length
+	}
+}
+
+// WithBlockSize sets the maximum uncompressed size of a buffered block before
+// it is written and flushed to the underlying io.Writer (after compression).
+func WithBlockSize(size int) EncoderFunc {
+	return func(cfg *encoderConfig) {
+		cfg.BlockSize = size
 	}
 }
 
@@ -229,7 +274,23 @@ func WithCodec(codec CodecName) EncoderFunc {
 func WithCompressionLevel(compLvl int) EncoderFunc {
 	return func(cfg *encoderConfig) {
 		cfg.CodecName = Deflate
-		cfg.CodecCompression = compLvl
+		cfg.CodecOptions.DeflateCompressionLevel = compLvl
+	}
+}
+
+// WithZStandardEncoderOptions sets the options for the ZStandard encoder.
+func WithZStandardEncoderOptions(opts ...zstd.EOption) EncoderFunc {
+	return func(cfg *encoderConfig) {
+		cfg.CodecOptions.ZStandardOptions.EOptions = append(cfg.CodecOptions.ZStandardOptions.EOptions, opts...)
+	}
+}
+
+// WithZStandardEncoder sets a pre-created ZStandard encoder to be reused.
+// This allows sharing a single encoder across multiple OCF encoders for efficiency.
+// The caller is responsible for closing the encoder after all OCF encoders are done.
+func WithZStandardEncoder(enc *zstd.Encoder) EncoderFunc {
+	return func(cfg *encoderConfig) {
+		cfg.CodecOptions.ZStandardOptions.Encoder = enc
 	}
 }
 
@@ -237,6 +298,14 @@ func WithCompressionLevel(compLvl int) EncoderFunc {
 func WithMetadata(meta map[string][]byte) EncoderFunc {
 	return func(cfg *encoderConfig) {
 		cfg.Metadata = meta
+	}
+}
+
+// WithMetadataKeyVal sets a single key-value pair for the metadata on
+// the encoder header.
+func WithMetadataKeyVal(key string, val []byte) EncoderFunc {
+	return func(cfg *encoderConfig) {
+		cfg.Metadata[key] = val
 	}
 }
 
@@ -281,6 +350,10 @@ type Encoder struct {
 
 	blockLength int
 	count       int
+	blockSize   int
+
+	// Stored for Reset.
+	header Header
 }
 
 // NewEncoder returns a new encoder that writes to w using schema s.
@@ -316,7 +389,7 @@ func newEncoder(schema avro.Schema, w io.Writer, cfg encoderConfig) (*Encoder, e
 
 		if info.Size() > 0 {
 			reader := avro.NewReader(file, 1024)
-			h, err := readHeader(reader, cfg.SchemaCache)
+			h, err := readHeader(reader, cfg.SchemaCache, cfg.CodecOptions)
 			if err != nil {
 				return nil, err
 			}
@@ -333,6 +406,12 @@ func newEncoder(schema avro.Schema, w io.Writer, cfg encoderConfig) (*Encoder, e
 				sync:        h.Sync,
 				codec:       h.Codec,
 				blockLength: cfg.BlockLength,
+				blockSize:   cfg.BlockSize,
+				header: Header{
+					Magic: magicBytes,
+					Meta:  h.Meta,
+					Sync:  h.Sync,
+				},
 			}
 			return e, nil
 		}
@@ -354,7 +433,7 @@ func newEncoder(schema avro.Schema, w io.Writer, cfg encoderConfig) (*Encoder, e
 		_, _ = rand.Read(header.Sync[:])
 	}
 
-	codec, err := resolveCodec(cfg.CodecName, cfg.CodecCompression)
+	codec, err := resolveCodec(cfg.CodecName, cfg.CodecOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -373,24 +452,34 @@ func newEncoder(schema avro.Schema, w io.Writer, cfg encoderConfig) (*Encoder, e
 		sync:        header.Sync,
 		codec:       codec,
 		blockLength: cfg.BlockLength,
+		blockSize:   cfg.BlockSize,
+		header:      header,
 	}
 	return e, nil
 }
 
 func computeEncoderConfig(opts []EncoderFunc) encoderConfig {
 	cfg := encoderConfig{
-		BlockLength:      100,
-		CodecName:        Null,
-		CodecCompression: -1,
-		Metadata:         map[string][]byte{},
-		EncodingConfig:   avro.DefaultConfig,
-		SchemaCache:      avro.DefaultSchemaCache,
-		SchemaMarshaler:  DefaultSchemaMarshaler,
+		BlockLength: 100,
+		CodecName:   Null,
+		CodecOptions: codecOptions{
+			DeflateCompressionLevel: flate.DefaultCompression,
+		},
+		Metadata:        map[string][]byte{},
+		EncodingConfig:  avro.DefaultConfig,
+		SchemaCache:     avro.DefaultSchemaCache,
+		SchemaMarshaler: DefaultSchemaMarshaler,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 	return cfg
+}
+
+func (e *Encoder) shouldWriteDataBlock() bool {
+	blockLengthReached := e.blockLength != 0 && e.count >= e.blockLength
+	blockSizeReached := e.blockSize != 0 && e.buf.Len() >= e.blockSize
+	return blockLengthReached || blockSizeReached
 }
 
 // Write v to the internal buffer. This method skips the internal encoder and
@@ -404,7 +493,7 @@ func (e *Encoder) Write(p []byte) (n int, err error) {
 	}
 
 	e.count++
-	if e.count >= e.blockLength {
+	if e.shouldWriteDataBlock() {
 		if err = e.writerBlock(); err != nil {
 			return n, err
 		}
@@ -420,7 +509,7 @@ func (e *Encoder) Encode(v any) error {
 	}
 
 	e.count++
-	if e.count >= e.blockLength {
+	if e.shouldWriteDataBlock() {
 		if err := e.writerBlock(); err != nil {
 			return err
 		}
@@ -442,9 +531,43 @@ func (e *Encoder) Flush() error {
 	return e.writer.Error
 }
 
-// Close closes the encoder, flushing the writer.
+// Close closes the encoder, flushing the writer and releasing codec resources.
 func (e *Encoder) Close() error {
-	return e.Flush()
+	err := e.Flush()
+	if c, ok := e.codec.(io.Closer); ok {
+		if cerr := c.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}
+	return err
+}
+
+// Reset flushes any pending data, resets the encoder to write to a new io.Writer,
+// and writes a fresh header with a new sync marker. The schema, codec, and other
+// settings are preserved from the original encoder.
+// This allows reusing the encoder for multiple files without reallocating buffers.
+func (e *Encoder) Reset(w io.Writer) error {
+	if err := e.Flush(); err != nil {
+		return err
+	}
+
+	// Generate new sync marker for the new file.
+	_, _ = rand.Read(e.header.Sync[:])
+	e.sync = e.header.Sync
+
+	// Reset writer to new output and write header.
+	e.writer.Reset(w)
+	e.writer.WriteVal(HeaderSchema, e.header)
+	if err := e.writer.Flush(); err != nil {
+		return err
+	}
+
+	// Reset buffer and encoder.
+	e.buf.Reset()
+	e.encoder.Reset(e.buf)
+	e.count = 0
+
+	return nil
 }
 
 func (e *Encoder) writerBlock() error {
@@ -469,7 +592,7 @@ type ocfHeader struct {
 	Sync   [16]byte
 }
 
-func readHeader(reader *avro.Reader, schemaCache *avro.SchemaCache) (*ocfHeader, error) {
+func readHeader(reader *avro.Reader, schemaCache *avro.SchemaCache, codecOpts codecOptions) (*ocfHeader, error) {
 	var h Header
 	reader.ReadVal(HeaderSchema, &h)
 	if reader.Error != nil {
@@ -484,7 +607,7 @@ func readHeader(reader *avro.Reader, schemaCache *avro.SchemaCache) (*ocfHeader,
 		return nil, err
 	}
 
-	codec, err := resolveCodec(CodecName(h.Meta[codecKey]), -1)
+	codec, err := resolveCodec(CodecName(h.Meta[codecKey]), codecOpts)
 	if err != nil {
 		return nil, err
 	}

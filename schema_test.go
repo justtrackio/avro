@@ -3,6 +3,7 @@ package avro_test
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/justtrackio/avro/v2"
@@ -255,6 +256,11 @@ func TestRecordSchema(t *testing.T) {
 		{
 			name:    "Invalid Field Type",
 			schema:  `{"type":"record", "name":"test", "namespace": "org.hamba.avro", "fields":[{"name": "field", "type": "blah"}]}`,
+			wantErr: require.Error,
+		},
+		{
+			name:    "Duplicate Field Names",
+			schema:  `{"type":"record", "name":"test", "namespace": "org.hamba.avro", "doc": "docs", "fields":[{"name": "field", "type": "int"}, {"name": "field", "type": "string"}]}`,
 			wantErr: require.Error,
 		},
 	}
@@ -699,6 +705,11 @@ func TestEnumSchema(t *testing.T) {
 			wantErr: require.Error,
 		},
 		{
+			name:    "Duplicate Symbols",
+			schema:  `{"type":"enum", "name":"test", "namespace": "org.hamba.avro", "symbols":["TEST", "TEST"]}`,
+			wantErr: require.Error,
+		},
+		{
 			name:    "Invalid Symbol Type",
 			schema:  `{"type":"enum", "name":"test", "namespace": "org.hamba.avro", "symbols":[1]}`,
 			wantErr: require.Error,
@@ -984,6 +995,11 @@ func TestFixedSchema(t *testing.T) {
 			schema:  `{"type":"fixed", "name":"test", "namespace": "org.hamba.avro", "size": "test"}`,
 			wantErr: require.Error,
 		},
+		{
+			name:    "Invalid Size Value",
+			schema:  `{"type":"fixed", "name":"test", "namespace": "org.hamba.avro", "size": -1}`,
+			wantErr: require.Error,
+		},
 	}
 
 	for _, test := range tests {
@@ -1232,6 +1248,12 @@ func TestSchema_FingerprintUsing(t *testing.T) {
 			schema: "null",
 			typ:    avro.CRC64Avro,
 			want:   []byte{0x63, 0xdd, 0x24, 0xe7, 0xcc, 0x25, 0x8f, 0x8a},
+		},
+		{
+			name:   "Null CRC64-AVRO-LE",
+			schema: "null",
+			typ:    avro.CRC64AvroLE,
+			want:   []byte{0x8a, 0x8f, 0x25, 0xcc, 0xe7, 0x24, 0xdd, 0x63},
 		},
 		{
 			name:   "Null MD5",
@@ -2254,4 +2276,19 @@ func TestNewSchema_IgnoresInvalidProperties(t *testing.T) {
 			"scale":       "def",
 		}, rec.Props())
 	})
+}
+
+func TestConcurrentParse(t *testing.T) {
+	var wg sync.WaitGroup
+
+	for i := 0; i < 10000; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := avro.ParseFiles("testdata/concurrent-schema.avsc")
+			require.NoError(t, err)
+		}()
+	}
+
+	wg.Wait()
 }

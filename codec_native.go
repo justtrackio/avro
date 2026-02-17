@@ -164,12 +164,12 @@ func createDecoderOfNative(schema *PrimitiveSchema, typ reflect2.Type) ValDecode
 	case reflect.Ptr:
 		ptrType := typ.(*reflect2.UnsafePtrType)
 		elemType := ptrType.Elem()
-		tpy1 := elemType.Type1()
+		typ1 := elemType.Type1()
 		ls := getLogicalSchema(schema)
 		if ls == nil {
 			break
 		}
-		if !tpy1.ConvertibleTo(ratType) || schema.Type() != Bytes || ls.Type() != Decimal {
+		if !typ1.ConvertibleTo(ratType) || schema.Type() != Bytes || ls.Type() != Decimal {
 			break
 		}
 		dec := ls.(*DecimalLogicalSchema)
@@ -181,7 +181,7 @@ func createDecoderOfNative(schema *PrimitiveSchema, typ reflect2.Type) ValDecode
 }
 
 //nolint:maintidx // Splitting this would not make it simpler.
-func createEncoderOfNative(schema Schema, typ reflect2.Type) ValEncoder {
+func createEncoderOfNative(schema *PrimitiveSchema, typ reflect2.Type) ValEncoder {
 	switch typ.Kind() {
 	case reflect.Bool:
 		if schema.Type() != Boolean {
@@ -310,21 +310,17 @@ func createEncoderOfNative(schema Schema, typ reflect2.Type) ValEncoder {
 	case reflect.Ptr:
 		ptrType := typ.(*reflect2.UnsafePtrType)
 		elemType := ptrType.Elem()
-		tpy1 := elemType.Type1()
+		typ1 := elemType.Type1()
 		ls := getLogicalSchema(schema)
 		if ls == nil {
 			break
 		}
-		if !tpy1.ConvertibleTo(ratType) || schema.Type() != Bytes || ls.Type() != Decimal {
+		if !typ1.ConvertibleTo(ratType) || schema.Type() != Bytes || ls.Type() != Decimal {
 			break
 		}
 		dec := ls.(*DecimalLogicalSchema)
 
 		return &bytesDecimalPtrCodec{prec: dec.Precision(), scale: dec.Scale()}
-	}
-
-	if schema.Type() == Null {
-		return &nullCodec{}
 	}
 
 	return &errorEncoder{err: fmt.Errorf("avro: %s is unsupported for Avro %s", typ.String(), schema.Type())}
@@ -349,6 +345,8 @@ func getLogicalType(schema Schema) LogicalType {
 }
 
 type nullCodec struct{}
+
+func (*nullCodec) Decode(unsafe.Pointer, *Reader) {}
 
 func (*nullCodec) Encode(unsafe.Pointer, *Writer) {}
 
@@ -612,6 +610,16 @@ func (c *bytesDecimalCodec) Encode(ptr unsafe.Pointer, w *Writer) {
 	i := (&big.Int{}).Mul(r.Num(), scale)
 	i = i.Div(i, r.Denom())
 
+	if numDigits, ok := checkDecimalPrecision(i, c.prec); !ok {
+		w.Error = fmt.Errorf(
+			"avro: cannot encode %v as Avro bytes.decimal with precision=%d, has %d significant digits",
+			r.FloatString(c.scale),
+			c.prec,
+			numDigits,
+		)
+		return
+	}
+
 	var b []byte
 	switch i.Sign() {
 	case 0:
@@ -648,6 +656,16 @@ func (c *bytesDecimalPtrCodec) Encode(ptr unsafe.Pointer, w *Writer) {
 	scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(c.scale)), nil)
 	i := (&big.Int{}).Mul(r.Num(), scale)
 	i = i.Div(i, r.Denom())
+
+	if numDigits, ok := checkDecimalPrecision(i, c.prec); !ok {
+		w.Error = fmt.Errorf(
+			"avro: cannot encode %v as Avro bytes.decimal with precision=%d, has %d significant digits",
+			r.FloatString(c.scale),
+			c.prec,
+			numDigits,
+		)
+		return
+	}
 
 	var b []byte
 	switch i.Sign() {

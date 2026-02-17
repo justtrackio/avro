@@ -29,8 +29,8 @@ func createDecoderOfFixed(fixed *FixedSchema, typ reflect2.Type) ValDecoder {
 		elemType := ptrType.Elem()
 
 		ls := fixed.Logical()
-		tpy1 := elemType.Type1()
-		if elemType.Kind() != reflect.Struct || !tpy1.ConvertibleTo(ratType) || ls == nil ||
+		typ1 := elemType.Type1()
+		if elemType.Kind() != reflect.Struct || !typ1.ConvertibleTo(ratType) || ls == nil ||
 			ls.Type() != Decimal {
 			break
 		}
@@ -72,8 +72,8 @@ func createEncoderOfFixed(fixed *FixedSchema, typ reflect2.Type) ValEncoder {
 		elemType := ptrType.Elem()
 
 		ls := fixed.Logical()
-		tpy1 := elemType.Type1()
-		if elemType.Kind() != reflect.Struct || !tpy1.ConvertibleTo(ratType) || ls == nil ||
+		typ1 := elemType.Type1()
+		if elemType.Kind() != reflect.Struct || !typ1.ConvertibleTo(ratType) || ls == nil ||
 			ls.Type() != Decimal {
 			break
 		}
@@ -145,6 +145,16 @@ func (c *fixedDecimalCodec) Encode(ptr unsafe.Pointer, w *Writer) {
 	i := (&big.Int{}).Mul(r.Num(), scale)
 	i = i.Div(i, r.Denom())
 
+	if numDigits, ok := checkDecimalPrecision(i, c.prec); !ok {
+		w.Error = fmt.Errorf(
+			"avro: cannot encode %v as Avro fixed.decimal with precision=%d, has %d significant digits",
+			r.FloatString(c.scale),
+			c.prec,
+			numDigits,
+		)
+		return
+	}
+
 	var b []byte
 	switch i.Sign() {
 	case 0:
@@ -163,6 +173,16 @@ func (c *fixedDecimalCodec) Encode(ptr unsafe.Pointer, w *Writer) {
 
 	case -1:
 		b = i.Add(i, (&big.Int{}).Lsh(one, uint(c.size*8))).Bytes()
+	}
+
+	if len(b) != c.size {
+		w.Error = fmt.Errorf(
+			"avro: cannot encode %v as Avro fixed.decimal with size=%d, encodes to %d bytes",
+			r.FloatString(c.scale),
+			c.size,
+			len(b),
+		)
+		return
 	}
 
 	_, _ = w.Write(b)

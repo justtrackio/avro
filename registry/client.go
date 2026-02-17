@@ -7,6 +7,7 @@ package registry
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -58,6 +59,13 @@ type Registry interface {
 
 	// IsRegisteredWithRefs determines if the schema is registered, with optional referenced schemas.
 	IsRegisteredWithRefs(ctx context.Context, subject, schema string, refs ...SchemaReference) (int, avro.Schema, error)
+
+	// IsCompatible determines if the schema is compatible with all schemas in the subject.
+	IsCompatible(ctx context.Context, subject, schema string) (bool, error)
+
+	// IsCompatibleWithRefs determines if the schema is compatible with all schemas in the subject,
+	// with optional referenced schemas.
+	IsCompatibleWithRefs(ctx context.Context, subject, schema string, refs ...SchemaReference) (bool, error)
 }
 
 type schemaPayload struct {
@@ -82,9 +90,14 @@ type credentials struct {
 }
 
 type schemaInfoPayload struct {
-	Schema  string `json:"schema"`
-	ID      int    `json:"id"`
-	Version int    `json:"version"`
+	Schema   string         `json:"schema"`
+	ID       int            `json:"id"`
+	Version  int            `json:"version"`
+	Metadata schemaMetadata `json:"metadata"`
+}
+
+type schemaMetadata struct {
+	Properties map[string]string `json:"properties"`
 }
 
 // Parse converts the string schema registry response into a
@@ -93,6 +106,9 @@ func (s *schemaInfoPayload) Parse() (info SchemaInfo, err error) {
 	info = SchemaInfo{
 		ID:      s.ID,
 		Version: s.Version,
+		Metadata: SchemaMetadata{
+			Properties: s.Metadata.Properties,
+		},
 	}
 	info.Schema, err = avro.Parse(s.Schema)
 	return info, err
@@ -100,9 +116,22 @@ func (s *schemaInfoPayload) Parse() (info SchemaInfo, err error) {
 
 // SchemaInfo represents a schema and metadata information.
 type SchemaInfo struct {
-	Schema  avro.Schema
-	ID      int
-	Version int
+	Schema   avro.Schema
+	ID       int
+	Version  int
+	Metadata SchemaMetadata
+}
+
+// IDBytes returns 4 bytes that represent the schema ID.
+func (s SchemaInfo) IDBytes() []byte {
+	result := make([]byte, 4)
+	binary.BigEndian.PutUint32(result, uint32(s.ID))
+	return result
+}
+
+// SchemaMetadata represents the schema metadata.
+type SchemaMetadata struct {
+	Properties map[string]string
 }
 
 var defaultClient = &http.Client{
@@ -298,6 +327,32 @@ func (c *Client) IsRegisteredWithRefs(
 
 	sch, err := avro.Parse(schema)
 	return resp.ID, sch, err
+}
+
+type isCompatibleResponse struct {
+	IsCompatible bool `json:"is_compatible"`
+}
+
+// IsCompatible determines if the schema is compatible with all schemas in the subject.
+func (c *Client) IsCompatible(ctx context.Context, subject, schema string) (bool, error) {
+	return c.IsCompatibleWithRefs(ctx, subject, schema)
+}
+
+// IsCompatibleWithRefs determines if the schema is compatible with all schemas in the subject,
+// with optional referenced schemas.
+func (c *Client) IsCompatibleWithRefs(
+	ctx context.Context,
+	subject,
+	schema string,
+	references ...SchemaReference,
+) (bool, error) {
+	req := schemaPayload{Schema: schema, References: references}
+	reqPath := path.Join("compatibility", "subjects", subject, "versions")
+	var resp isCompatibleResponse
+	if err := c.request(ctx, http.MethodPost, reqPath, req, &resp); err != nil {
+		return false, err
+	}
+	return resp.IsCompatible, nil
 }
 
 // Compatibility levels.
