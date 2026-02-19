@@ -24,19 +24,33 @@ const (
 	ZStandard CodecName = "zstandard"
 )
 
-func resolveCodec(name CodecName, lvl int) (Codec, error) {
+type codecOptions struct {
+	DeflateCompressionLevel int
+	ZStandardOptions        zstdOptions
+}
+
+type zstdOptions struct {
+	EOptions []zstd.EOption
+	DOptions []zstd.DOption
+	// Encoder and Decoder allow sharing pre-created instances across multiple codecs.
+	// When set, EOptions/DOptions are ignored for that component.
+	Encoder *zstd.Encoder
+	Decoder *zstd.Decoder
+}
+
+func resolveCodec(name CodecName, codecOpts codecOptions) (Codec, error) {
 	switch name {
 	case Null, "":
 		return &NullCodec{}, nil
 
 	case Deflate:
-		return &DeflateCodec{compLvl: lvl}, nil
+		return &DeflateCodec{compLvl: codecOpts.DeflateCompressionLevel}, nil
 
 	case Snappy:
 		return &SnappyCodec{}, nil
 
 	case ZStandard:
-		return newZStandardCodec(), nil
+		return newZStandardCodec(codecOpts.ZStandardOptions), nil
 
 	default:
 		return nil, fmt.Errorf("unknown codec %s", name)
@@ -128,16 +142,36 @@ func (*SnappyCodec) Encode(b []byte) []byte {
 
 // ZStandardCodec is a zstandard compression codec.
 type ZStandardCodec struct {
-	decoder *zstd.Decoder
-	encoder *zstd.Encoder
+	decoder       *zstd.Decoder
+	encoder       *zstd.Encoder
+	sharedDecoder bool // true if decoder was provided externally and should not be closed
+	sharedEncoder bool // true if encoder was provided externally and should not be closed
 }
 
-func newZStandardCodec() *ZStandardCodec {
-	decoder, _ := zstd.NewReader(nil)
-	encoder, _ := zstd.NewWriter(nil)
+func newZStandardCodec(opts zstdOptions) *ZStandardCodec {
+	var decoder *zstd.Decoder
+	var encoder *zstd.Encoder
+	var sharedDecoder, sharedEncoder bool
+
+	if opts.Decoder != nil {
+		decoder = opts.Decoder
+		sharedDecoder = true
+	} else {
+		decoder, _ = zstd.NewReader(nil, opts.DOptions...)
+	}
+
+	if opts.Encoder != nil {
+		encoder = opts.Encoder
+		sharedEncoder = true
+	} else {
+		encoder, _ = zstd.NewWriter(nil, opts.EOptions...)
+	}
+
 	return &ZStandardCodec{
-		decoder: decoder,
-		encoder: encoder,
+		decoder:       decoder,
+		encoder:       encoder,
+		sharedDecoder: sharedDecoder,
+		sharedEncoder: sharedEncoder,
 	}
 }
 
@@ -151,4 +185,16 @@ func (zstdCodec *ZStandardCodec) Decode(b []byte) ([]byte, error) {
 func (zstdCodec *ZStandardCodec) Encode(b []byte) []byte {
 	defer zstdCodec.encoder.Reset(nil)
 	return zstdCodec.encoder.EncodeAll(b, nil)
+}
+
+// Close closes the zstandard encoder and decoder, releasing resources.
+// Shared instances (provided via WithZStandardEncoder/WithZStandardDecoder) are not closed.
+func (zstdCodec *ZStandardCodec) Close() error {
+	if zstdCodec.decoder != nil && !zstdCodec.sharedDecoder {
+		zstdCodec.decoder.Close()
+	}
+	if zstdCodec.encoder != nil && !zstdCodec.sharedEncoder {
+		return zstdCodec.encoder.Close()
+	}
+	return nil
 }

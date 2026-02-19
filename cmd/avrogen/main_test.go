@@ -88,7 +88,7 @@ func TestAvroGen_GeneratesSchema(t *testing.T) {
 	require.NoError(t, err)
 
 	if *update {
-		err = os.WriteFile("testdata/golden.go", got, 0600)
+		err = os.WriteFile("testdata/golden.go", got, 0o600)
 		require.NoError(t, err)
 	}
 
@@ -111,7 +111,7 @@ func TestAvroGen_GeneratesSchemaWithFullname(t *testing.T) {
 	require.NoError(t, err)
 
 	if *update {
-		err = os.WriteFile("testdata/golden_fullname.go", got, 0600)
+		err = os.WriteFile("testdata/golden_fullname.go", got, 0o600)
 		require.NoError(t, err)
 	}
 
@@ -134,7 +134,7 @@ func TestAvroGen_GeneratesSchemaWithEncoders(t *testing.T) {
 	require.NoError(t, err)
 
 	if *update {
-		err = os.WriteFile("testdata/golden_encoders.go", got, 0600)
+		err = os.WriteFile("testdata/golden_encoders.go", got, 0o600)
 		require.NoError(t, err)
 	}
 
@@ -157,7 +157,7 @@ func TestAvroGen_GeneratesSchemaWithFullSchema(t *testing.T) {
 	require.NoError(t, err)
 
 	if *update {
-		err = os.WriteFile("testdata/golden_encoders_fullschema.go", got, 0600)
+		err = os.WriteFile("testdata/golden_encoders_fullschema.go", got, 0o600)
 		require.NoError(t, err)
 	}
 
@@ -180,11 +180,43 @@ func TestAvroGen_GeneratesSchemaWithStrictTypes(t *testing.T) {
 	require.NoError(t, err)
 
 	if *update {
-		err = os.WriteFile("testdata/golden_stricttypes.go", got, 0600)
+		err = os.WriteFile("testdata/golden_stricttypes.go", got, 0o600)
 		require.NoError(t, err)
 	}
 
 	want, err := os.ReadFile("testdata/golden_stricttypes.go")
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func TestAvroGen_GeneratesSchemaWithCustomLogicalTypes(t *testing.T) {
+	path, err := os.MkdirTemp("./", "avrogen")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(path) })
+
+	file := filepath.Join(path, "test.go")
+	args := []string{
+		"avrogen", "-pkg", "testpkg", "-o", file,
+		// test mapping to an external package type
+		"-logicaltype", "uuid,uuid.UUID,github.com/google/uuid",
+		// test mapping to a stdlib package type
+		"-logicaltype", "decimal,json.RawMessage,encoding/json",
+		// test mapping to a built-in type
+		"-logicaltype", "date,int32",
+		"testdata/schema_logicaltypes.avsc",
+	}
+	gotCode := realMain(args, io.Discard, io.Discard)
+	require.Equal(t, 0, gotCode)
+
+	got, err := os.ReadFile(file)
+	require.NoError(t, err)
+
+	if *update {
+		err = os.WriteFile("testdata/golden_logicaltypes.go", got, 0o600)
+		require.NoError(t, err)
+	}
+
+	want, err := os.ReadFile("testdata/golden_logicaltypes.go")
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 }

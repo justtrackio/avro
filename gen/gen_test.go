@@ -72,7 +72,56 @@ func TestStruct_HandlesGoInitialisms(t *testing.T) {
 
 	_, lines := generate(t, schema, gc)
 
-	assert.Contains(t, lines, "type HTTPRecord struct {")
+	assert.Contains(t, lines, "type HttpRecord struct {")
+}
+
+func TestStruct_MultilineDoc(t *testing.T) {
+	schema := `{
+  "type": "record",
+  "name": "Test",
+  "doc": "Test record doc\nMultiline record comments",
+  "fields": [
+    { "name": "someString", "type": "string", "doc": "Test field doc\nMultiline field comments" }
+  ]
+}`
+	gc := gen.Config{
+		PackageName: "Something",
+	}
+
+	_, lines := generate(t, schema, gc)
+
+	for _, expected := range []string{
+		"// Test record doc",
+		"// Multiline record comments.",
+		"// Test field doc",
+		"// Multiline field comments.",
+	} {
+		assert.Contains(t, lines, expected)
+	}
+}
+
+func TestStruct_EscapeBacktick(t *testing.T) {
+	schema := `{
+  "type": "record",
+  "name": "Test",
+  "doc": "Test record doc with ` + "`" + `backticks` + "`" + `",
+  "fields": [
+    { "name": "someString", "type": "string" }
+  ]
+}`
+	gc := gen.Config{
+		PackageName: "Something",
+		Encoders:    true,
+		FullSchema:  true,
+	}
+
+	_, lines := generate(t, schema, gc)
+
+	for _, expected := range []string{
+		"var schemaTest = avro.MustParse(`{\"name\":\"Test\",\"doc\":\"Test record doc with ` + \"`\" + `backticks` + \"`\" + `\",\"type\":\"record\",\"fields\":[{\"name\":\"someString\",\"type\":\"string\"}]}`)",
+	} {
+		assert.Contains(t, lines, expected)
+	}
 }
 
 func TestStruct_HandlesAdditionalInitialisms(t *testing.T) {
@@ -90,7 +139,7 @@ func TestStruct_HandlesAdditionalInitialisms(t *testing.T) {
 
 	_, lines := generate(t, schema, gc)
 
-	assert.Contains(t, lines, "type CIDOverHTTPRecord struct {")
+	assert.Contains(t, lines, "type CIDOverHttpRecord struct {")
 }
 
 func TestStruct_HandlesStrictTypes(t *testing.T) {
@@ -179,7 +228,7 @@ func TestStruct_ConfigurableLogicalTypes(t *testing.T) {
 		"import (",
 		"\"github.com/google/uuid\"",
 		"type Test struct {",
-		"ID uuid.UUID `avro:\"id\"`",
+		"Id uuid.UUID `avro:\"id\"`",
 		"}",
 	} {
 		assert.Contains(t, lines, expected)
@@ -195,7 +244,7 @@ func TestStruct_GenFromRecordSchema(t *testing.T) {
 	file, _ := generate(t, string(schema), gc)
 
 	if *update {
-		err = os.WriteFile(fileName, file, 0600)
+		err = os.WriteFile(fileName, file, 0o600)
 		require.NoError(t, err)
 	}
 
@@ -218,7 +267,7 @@ func TestStruct_GenFromRecordSchemaWithCustomLogicalTypes(t *testing.T) {
 	file, _ := generate(t, string(schema), gc)
 
 	if *update {
-		err = os.WriteFile(fileName, file, 0600)
+		err = os.WriteFile(fileName, file, 0o600)
 		require.NoError(t, err)
 	}
 
@@ -235,7 +284,7 @@ func TestStruct_GenFromRecordSchemaWithFullName(t *testing.T) {
 	file, _ := generate(t, string(schema), gc)
 
 	if *update {
-		err = os.WriteFile("testdata/golden_fullname.go", file, 0600)
+		err = os.WriteFile("testdata/golden_fullname.go", file, 0o600)
 		require.NoError(t, err)
 	}
 
@@ -252,7 +301,7 @@ func TestStruct_GenFromRecordSchemaWithEncoders(t *testing.T) {
 	file, _ := generate(t, string(schema), gc)
 
 	if *update {
-		err = os.WriteFile("testdata/golden_encoders.go", file, 0600)
+		err = os.WriteFile("testdata/golden_encoders.go", file, 0o600)
 		require.NoError(t, err)
 	}
 
@@ -269,13 +318,37 @@ func TestStruct_GenFromRecordSchemaWithFullSchema(t *testing.T) {
 	file, _ := generate(t, string(schema), gc)
 
 	if *update {
-		err = os.WriteFile("testdata/golden_encoders_fullschema.go", file, 0600)
+		err = os.WriteFile("testdata/golden_encoders_fullschema.go", file, 0o600)
 		require.NoError(t, err)
 	}
 
 	want, err := os.ReadFile("testdata/golden_encoders_fullschema.go")
 	require.NoError(t, err)
 	assert.Equal(t, string(want), string(file))
+}
+
+func TestGenerator_GenEnum(t *testing.T) {
+	goldenSchema, err := avro.ParseFiles("testdata/golden.avsc")
+	require.NoError(t, err)
+
+	g := gen.NewGenerator("something", map[string]gen.TagStyle{}, gen.WithEnums(true))
+	g.Parse(goldenSchema)
+
+	var buf bytes.Buffer
+	err = g.Write(&buf)
+	require.NoError(t, err)
+
+	formatted, err := format.Source(buf.Bytes())
+	require.NoError(t, err)
+
+	if *update {
+		err = os.WriteFile("testdata/golden_enum.go", formatted, 0600)
+		require.NoError(t, err)
+	}
+
+	want, err := os.ReadFile("testdata/golden_enum.go")
+	require.NoError(t, err)
+	assert.Equal(t, string(want), string(formatted))
 }
 
 func TestGenerator(t *testing.T) {
@@ -297,11 +370,51 @@ func TestGenerator(t *testing.T) {
 	require.NoError(t, err)
 
 	if *update {
-		err = os.WriteFile("testdata/golden_multiple.go", formatted, 0600)
+		err = os.WriteFile("testdata/golden_multiple.go", formatted, 0o600)
 		require.NoError(t, err)
 	}
 
 	want, err := os.ReadFile("testdata/golden_multiple.go")
+	require.NoError(t, err)
+	assert.Equal(t, string(want), string(formatted))
+}
+
+func TestGenerator_CustomTemplateWithMetadata(t *testing.T) {
+	unionSchema, err := avro.ParseFiles("testdata/uniontype.avsc")
+	require.NoError(t, err)
+
+	mainSchema, err := avro.ParseFiles("testdata/main.avsc")
+	require.NoError(t, err)
+
+	template := `// Code generated by avro/gen. DO NOT EDIT.
+package {{ .PackageName }}
+
+{{- range .Typedefs }}
+	{{- if .Metadata }}
+	// metadata: {{ .Metadata }}
+	{{- end }}
+	type {{ .Name }} struct {
+	// fields ommitted for brevity
+	}
+{{- end }}`
+
+	g := gen.NewGenerator("something", map[string]gen.TagStyle{}, gen.WithTemplate(template))
+	g.ParseWithMetadata(unionSchema, "metadata for union schema")
+	g.ParseWithMetadata(mainSchema, map[string]any{"metadata for": "main schema"})
+
+	var buf bytes.Buffer
+	err = g.Write(&buf)
+	require.NoError(t, err)
+
+	formatted, err := format.Source(buf.Bytes())
+	require.NoError(t, err)
+
+	if *update {
+		err = os.WriteFile("testdata/golden_metadata.go", formatted, 0o600)
+		require.NoError(t, err)
+	}
+
+	want, err := os.ReadFile("testdata/golden_metadata.go")
 	require.NoError(t, err)
 	assert.Equal(t, string(want), string(formatted))
 }

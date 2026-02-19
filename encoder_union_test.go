@@ -126,7 +126,7 @@ func TestEncoder_UnionMapWithDecimal(t *testing.T) {
 	defer ConfigTeardown()
 
 	t.Run("low scale", func(t *testing.T) {
-		schema := `["null", {"type": "bytes", "logicalType": "decimal", "precision": 4, "scale": 2}]`
+		schema := `["null", {"type": "bytes", "logicalType": "decimal", "precision": 5, "scale": 2}]`
 		buf := bytes.NewBuffer([]byte{})
 		enc, err := avro.NewEncoder(schema, buf)
 		require.NoError(t, err)
@@ -335,6 +335,40 @@ func TestEncoder_UnionInterfaceRecordNonPtr(t *testing.T) {
 	assert.Equal(t, []byte{0x02, 0x36, 0x06, 0x66, 0x6F, 0x6F}, buf.Bytes())
 }
 
+func TestEncoder_UnionConverterToAnyInterface(t *testing.T) {
+	defer ConfigTeardown()
+
+	avro.Register("test", TestRecord{})
+
+	schema := `["int", {"type": "record", "name": "test", "fields" : [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}]`
+	buf := bytes.NewBuffer([]byte{})
+	enc, err := avro.NewEncoder(schema, buf)
+	require.NoError(t, err)
+
+	val := &UnionRecord{Test: &TestRecord{A: 27, B: "foo"}}
+	err = enc.Encode(val)
+
+	require.NoError(t, err)
+	assert.Equal(t, []byte{0x02, 0x36, 0x06, 0x66, 0x6F, 0x6F}, buf.Bytes())
+}
+
+func TestEncoder_NullableUnionConverterToAnyInterface(t *testing.T) {
+	defer ConfigTeardown()
+
+	avro.Register("test", &TestRecord{})
+
+	schema := `{"name": "parent", "type": "record", "fields": [{"name": "union", "type": ["null", "int", {"type": "record", "name": "test", "fields" : [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}]}]}`
+	buf := bytes.NewBuffer([]byte{})
+	enc, err := avro.NewEncoder(schema, buf)
+	require.NoError(t, err)
+
+	var val any = &UnionRecordParent{UnionRecord: nil}
+	err = enc.Encode(val)
+
+	require.NoError(t, err)
+	assert.Equal(t, []byte{0}, buf.Bytes())
+}
+
 func TestEncoder_UnionInterfaceMap(t *testing.T) {
 	defer ConfigTeardown()
 
@@ -381,6 +415,74 @@ func TestEncoder_UnionInterfaceArray(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []byte{0x02, 0x01, 0x02, 0x36, 0x00}, buf.Bytes())
+}
+
+func TestEncoder_UnionInterfaceArrayEmpty(t *testing.T) {
+	defer ConfigTeardown()
+
+	avro.Register("array:int", []int{})
+
+	schema := `["int", {"type": "array", "items": "int"}]`
+	buf := bytes.NewBuffer([]byte{})
+	enc, err := avro.NewEncoder(schema, buf)
+	require.NoError(t, err)
+
+	var val any = []int{}
+	err = enc.Encode(val)
+
+	require.NoError(t, err)
+	assert.Equal(t, []byte{0x02, 0x00}, buf.Bytes())
+}
+
+func TestEncoder_UnionInterfaceUnregisteredArray(t *testing.T) {
+	defer ConfigTeardown()
+
+	schema := `["int", {"type": "array", "items": "int"}]`
+	buf := bytes.NewBuffer([]byte{})
+	enc, err := avro.NewEncoder(schema, buf)
+	require.NoError(t, err)
+
+	var val any = map[string]any{
+		"array": []int{27},
+	}
+	err = enc.Encode(val)
+
+	require.NoError(t, err)
+	assert.Equal(t, []byte{0x02, 0x01, 0x02, 0x36, 0x00}, buf.Bytes())
+}
+
+func TestEncoder_UnionInterfaceUnregisteredArrayEmpty(t *testing.T) {
+	defer ConfigTeardown()
+
+	schema := `["int", {"type": "array", "items": "int"}]`
+	buf := bytes.NewBuffer([]byte{})
+	enc, err := avro.NewEncoder(schema, buf)
+	require.NoError(t, err)
+
+	var val any = map[string]any{
+		"array": []int{},
+	}
+	err = enc.Encode(val)
+
+	require.NoError(t, err)
+	assert.Equal(t, []byte{0x02, 0x00}, buf.Bytes())
+}
+
+func TestEncoder_UnionInterfaceUnregisteredArrayNull(t *testing.T) {
+	defer ConfigTeardown()
+
+	schema := `["int", {"type": "array", "items": "int"}]`
+	buf := bytes.NewBuffer([]byte{})
+	enc, err := avro.NewEncoder(schema, buf)
+	require.NoError(t, err)
+
+	var val any = map[string]any{
+		"array": nil,
+	}
+	err = enc.Encode(val)
+
+	require.NoError(t, err)
+	assert.Equal(t, []byte{0x02, 0x00}, buf.Bytes())
 }
 
 func TestEncoder_UnionInterfaceNull(t *testing.T) {
@@ -480,7 +582,7 @@ func TestEncoder_UnionInterfaceWithDecimal(t *testing.T) {
 	defer ConfigTeardown()
 
 	t.Run("low scale", func(t *testing.T) {
-		schema := `["null", {"type": "bytes", "logicalType": "decimal", "precision": 4, "scale": 2}]`
+		schema := `["null", {"type": "bytes", "logicalType": "decimal", "precision": 5, "scale": 2}]`
 		buf := bytes.NewBuffer([]byte{})
 		enc, err := avro.NewEncoder(schema, buf)
 		require.NoError(t, err)
@@ -656,7 +758,7 @@ func TestEncoder_UnionResolver(t *testing.T) {
 		},
 		{
 			name:   "Go big.Rat as Avro bytes.decimal",
-			schema: `["null",{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}]`,
+			schema: `["null",{"type":"bytes","logicalType":"decimal","precision":5,"scale":2}]`,
 			value:  big.NewRat(1734, 5),
 			want:   []byte{0x2, 0x6, 0x00, 0x87, 0x78},
 		},

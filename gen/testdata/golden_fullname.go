@@ -79,5 +79,5 @@ type ABTest struct {
 	NonNullableRecordUnion          any                      `avro:"nonNullableRecordUnion"`
 	NullableRecordUnionWith3Options any                      `avro:"nullableRecordUnionWith3Options"`
 	Ref                             ABRecord2InNullableUnion `avro:"ref"`
-	UUID                            string                   `avro:"uuid"`
+	Uuid                            string                   `avro:"uuid"`
 }

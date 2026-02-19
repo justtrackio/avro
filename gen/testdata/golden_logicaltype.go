@@ -80,5 +80,5 @@ type Test struct {
 	NonNullableRecordUnion          any                    `avro:"nonNullableRecordUnion"`
 	NullableRecordUnionWith3Options any                    `avro:"nullableRecordUnionWith3Options"`
 	Ref                             Record2InNullableUnion `avro:"ref"`
-	UUID                            uuid.UUID              `avro:"uuid"`
+	Uuid                            uuid.UUID              `avro:"uuid"`
 }

@@ -439,6 +439,22 @@ func TestDecoder_UnionInterfaceArray(t *testing.T) {
 	assert.Equal(t, []int{27}, got)
 }
 
+func TestDecoder_UnionInterfaceArrayEmpty(t *testing.T) {
+	defer ConfigTeardown()
+
+	avro.Register("array:int", []int{})
+
+	data := []byte{0x02, 0x00}
+	schema := `["int", {"type": "array", "items": "int"}]`
+	dec, _ := avro.NewDecoder(schema, bytes.NewReader(data))
+
+	var got any
+	err := dec.Decode(&got)
+
+	require.NoError(t, err)
+	assert.Equal(t, []int{}, got)
+}
+
 func TestDecoder_UnionInterfaceArrayNamed(t *testing.T) {
 	defer ConfigTeardown()
 
@@ -504,6 +520,42 @@ func TestDecoder_UnionInterfaceRecord(t *testing.T) {
 	assert.Equal(t, "foo", rec.B)
 }
 
+func TestDecoder_UnionConverterFromAnyInterface(t *testing.T) {
+	defer ConfigTeardown()
+
+	avro.Register("test", TestRecord{})
+
+	data := []byte{0x02, 0x36, 0x06, 0x66, 0x6F, 0x6F}
+	schema := `["int", {"type": "record", "name": "test", "fields" : [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}]`
+	dec, _ := avro.NewDecoder(schema, bytes.NewReader(data))
+
+	var got *UnionRecord
+	err := dec.Decode(&got)
+
+	require.NoError(t, err)
+	assert.IsType(t, &UnionRecord{}, got)
+	rec := got.Test
+	assert.Equal(t, int64(27), rec.A)
+	assert.Equal(t, "foo", rec.B)
+}
+
+func TestDecoder_NullableUnionConverterFromAnyInterface(t *testing.T) {
+	defer ConfigTeardown()
+
+	avro.Register("test", &TestRecord{})
+
+	data := []byte{0}
+	schema := `["null", "int", {"type": "record", "name": "test", "fields" : [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}]`
+	dec, _ := avro.NewDecoder(schema, bytes.NewReader(data))
+
+	var got *UnionRecord
+	err := dec.Decode(&got)
+
+	require.NoError(t, err)
+	assert.IsType(t, &UnionRecord{}, got)
+	assert.Nil(t, got)
+}
+
 func TestDecoder_UnionInterfaceRecordNotReused(t *testing.T) {
 	defer ConfigTeardown()
 
@@ -521,6 +573,78 @@ func TestDecoder_UnionInterfaceRecordNotReused(t *testing.T) {
 	rec := got.(*TestRecord)
 	assert.Equal(t, int64(27), rec.A)
 	assert.Equal(t, "foo", rec.B)
+}
+
+func TestDecoder_UnionArrayRecord(t *testing.T) {
+	defer ConfigTeardown()
+
+	data := []byte{0x02, 0x02, 0x36, 0x06, 0x66, 0x6F, 0x6F, 0x00}
+	schema := `["null", {"type": "array", "items": {"type": "record", "name": "test", "fields": [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}}]`
+	dec, _ := avro.NewDecoder(schema, bytes.NewReader(data))
+
+	var record []TestRecord
+	got := &record
+	err := dec.Decode(&got)
+
+	require.NoError(t, err)
+	assert.Equal(t, int64(27), (*got)[0].A)
+	assert.Equal(t, "foo", (*got)[0].B)
+}
+
+func TestDecoder_UnionArrayRecordEmpty(t *testing.T) {
+	defer ConfigTeardown()
+
+	data := []byte{0x02, 0x00}
+	schema := `["null", {"type": "array", "items": {"type": "record", "name": "test", "fields": [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}}]`
+	dec, _ := avro.NewDecoder(schema, bytes.NewReader(data))
+
+	// decode to non-nil pointer to nil slice
+	var record []TestRecord
+	got := &record
+	assert.NotNil(t, got)
+	assert.Nil(t, *got)
+
+	err := dec.Decode(&got)
+
+	require.NoError(t, err)
+	assert.NotNil(t, *got)
+	assert.Equal(t, &[]TestRecord{}, got)
+}
+
+func TestDecoder_UnionInterfaceArrayRecord(t *testing.T) {
+	defer ConfigTeardown()
+
+	avro.Register("array:test", []TestRecord{})
+
+	data := []byte{0x02, 0x02, 0x36, 0x06, 0x66, 0x6F, 0x6F, 0x00}
+	schema := `["null", {"type": "array", "items": {"type": "record", "name": "test", "fields": [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}}]`
+	dec, _ := avro.NewDecoder(schema, bytes.NewReader(data))
+
+	var got any
+	err := dec.Decode(&got)
+
+	require.NoError(t, err)
+	assert.IsType(t, []TestRecord{}, got)
+	assert.Len(t, got, 1)
+	assert.Equal(t, int64(27), got.([]TestRecord)[0].A)
+	assert.Equal(t, "foo", got.([]TestRecord)[0].B)
+}
+
+func TestDecoder_UnionInterfaceArrayRecordEmpty(t *testing.T) {
+	defer ConfigTeardown()
+
+	avro.Register("array:test", []TestRecord{})
+
+	data := []byte{0x02, 0x00}
+	schema := `["null", {"type": "array", "items": {"type": "record", "name": "test", "fields": [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}}]`
+	dec, _ := avro.NewDecoder(schema, bytes.NewReader(data))
+
+	var got any
+	err := dec.Decode(&got)
+
+	require.NoError(t, err)
+	assert.IsType(t, []TestRecord{}, got)
+	assert.Equal(t, []TestRecord{}, got)
 }
 
 func TestDecoder_UnionInterfaceUnresolvableType(t *testing.T) {
@@ -549,7 +673,7 @@ func TestDecoder_UnionInterfaceDualRecords(t *testing.T) {
 
 	data := []byte{0x02, 0x36, 0x06, 0x66, 0x6F, 0x6F}
 	schema := `[
-		"int", 
+		"int",
 		{"type": "record", "name": "test", "fields" : [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]},
 		{"type": "record", "name": "otherTest", "fields" : [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}
 	]`
@@ -572,7 +696,7 @@ func TestDecoder_UnionInterfaceDualRecordsUnresolvableType(t *testing.T) {
 
 	data := []byte{0x02, 0x36, 0x06, 0x66, 0x6F, 0x6F}
 	schema := `[
-		"int", 
+		"int",
 		{"type": "record", "name": "test", "fields" : [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]},
 		{"type": "record", "name": "otherTest", "fields" : [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}
 	]`
@@ -598,7 +722,7 @@ func TestDecoder_UnionInterfaceDualRecordsPartialResolution(t *testing.T) {
 
 	data := []byte{0x02, 0x36, 0x06, 0x66, 0x6F, 0x6F}
 	schema := `[
-		"int", 
+		"int",
 		{"type": "record", "name": "test", "fields" : [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]},
 		{"type": "record", "name": "otherTest", "fields" : [{"name": "a", "type": "long"}, {"name": "b", "type": "string"}]}
 	]`
